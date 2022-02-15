@@ -93,6 +93,7 @@ type proxy struct {
 	remoteTerminate bool
 	assumeRole      string
 	gateway         string
+	gatewayHost     string
 	userId          string
 }
 
@@ -127,8 +128,35 @@ func newProxy(args ...interface{}) *proxy {
 		remoteTerminate: args[10].(bool),
 		assumeRole:      args[11].(string),
 		gateway:         args[12].(string),
+		gatewayHost:     "",
 		userId:          "unknown",
 	}
+}
+
+func (p *proxy) parseGateway() error {
+	if p.gateway == "" {
+		logrus.Debugln("No gateway provided. Nothing to parse.")
+		return nil
+	}
+
+	var (
+		link *url.URL
+		err  error
+	)
+
+	if link, err = url.Parse(p.gateway); err != nil {
+		return fmt.Errorf("error: failure while parsing gateway: %s. Error: %s",
+			p.gateway, err.Error())
+	}
+
+	if link.Host == "" {
+		return fmt.Errorf("error: empty host or protocol information in submitted gateway (%s)",
+			p.gateway)
+	}
+
+	p.gatewayHost = link.Host
+
+	return nil
 }
 
 func (p *proxy) parseEndpoint() error {
@@ -309,7 +337,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	addHeaders(r.Header, req.Header)
 
-	// HACK: Add in the sts callerId
+	// Add in the sts callerId
 	req.Header.Add("x-sts-userid", p.userId)
 	logrus.Debug("Headers:", req.Header)
 
@@ -318,16 +346,50 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Start AWS session from ENV, Shared Creds or EC2Role
 		signer := p.getSigner()
 
+		// TODO: Sign for OpenSerch
+		//       Stash signing headers
+		//       Sign for API Gateway
+		//       Include stashed headers as estra pass through headers
+		//       Send to API Gateway
+		//       API Gateway lambda replace signing headers with pass through headers and forward to OpenSearch
 		// Sign the request with AWSv4
 		payload := bytes.NewReader(replaceBody(req))
-		_, err := signer.Sign(req, payload, p.service, p.region, time.Now())
+		hdrs, err := signer.Sign(req, payload, p.service, p.region, time.Now())
 		if err != nil {
 			p.credentials = nil
 			logrus.Errorln("Failed to sign", err)
 			http.Error(w, "Failed to sign", http.StatusForbidden)
 			return
 		}
-		logrus.Debugln("Signed request")
+		logrus.Debugln("Signed request for endpoint")
+		logrus.Debugln("Host: ", req.Host)
+		logrus.Debugln("Headers returned from signing: ", hdrs)
+		logrus.Debugln("Signed request headers: ", req.Header)
+
+		if p.gatewayHost != "" {
+			logrus.Debugln("Setting request host to: ", p.gatewayHost)
+			signDateHdr := req.Header["X-Amz-Date"][0]
+			signAuthHdr := req.Header["Authorization"][0]
+			// osHost := req.Host
+			req.Host = p.gatewayHost
+			// Resign for the gateway
+			hdrs, err := signer.Sign(req, payload, p.service, p.region, time.Now())
+			if err != nil {
+				p.credentials = nil
+				logrus.Errorln("Failed to sign", err)
+				http.Error(w, "Failed to sign", http.StatusForbidden)
+				return
+			}
+			logrus.Debugln("Signed request for gateway")
+			logrus.Debugln("Host: ", req.Host)
+			logrus.Debugln("Headers returned from signing: ", hdrs)
+			logrus.Debugln("Signed request headers: ", req.Header)
+			// Add in the pass through signing headers
+			req.Header.Add("x-irnt-host", p.endpoint)
+			req.Header.Add("x-irnt-authorization", signAuthHdr)
+			req.Header.Add("x-irnt-date", signDateHdr)
+			logrus.Debug("Headers:", req.Header)
+		}
 	}
 
 	resp, err := p.httpClient.Do(req)
@@ -593,6 +655,11 @@ func main() {
 	)
 
 	if err = p.parseEndpoint(); err != nil {
+		logrus.Fatalln(err)
+		os.Exit(1)
+	}
+
+	if err = p.parseGateway(); err != nil {
 		logrus.Fatalln(err)
 		os.Exit(1)
 	}
