@@ -21,11 +21,13 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/session"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"golang.org/x/net/publicsuffix"
@@ -90,6 +92,8 @@ type proxy struct {
 	realm           string
 	remoteTerminate bool
 	assumeRole      string
+	gateway         string
+	userId          string
 }
 
 func newProxy(args ...interface{}) *proxy {
@@ -122,6 +126,8 @@ func newProxy(args ...interface{}) *proxy {
 		realm:           args[9].(string),
 		remoteTerminate: args[10].(bool),
 		assumeRole:      args[11].(string),
+		gateway:         args[12].(string),
+		userId:          "unknown",
 	}
 }
 
@@ -188,6 +194,10 @@ func (p *proxy) parseEndpoint() error {
 			parts := strings.Split(link.Host, ".")
 			p.region, p.service = parts[1], "es"
 			logrus.Debugln("AWS Region", p.region)
+		} else {
+			// HACK: replace if using gateway option
+			p.region, p.service = "us-east-1", "es"
+			logrus.Debugln("AWS Region", p.region)
 		}
 	}
 
@@ -228,6 +238,30 @@ func (p *proxy) getSigner() *v4.Signer {
 
 		p.credentials = creds
 		logrus.Infoln("Generated fresh AWS Credentials object")
+
+		stsSvc := sts.New(sess)
+		// if err != nil {
+		// 	logrus.Errorln("Failed to get STS service", err)
+		// }
+		identityInput := &sts.GetCallerIdentityInput{}
+		result, err := stsSvc.GetCallerIdentity(identityInput)
+		if err != nil {
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				default:
+					logrus.Errorln("Huh", err)
+					// fmt.Println(aerr.Error())
+				}
+			} else {
+				// Print the error, cast err to awserr.Error to get the Code and
+				// Message from an error.
+				logrus.Errorln("Huh", err)
+				// fmt.Println(err.Error())
+			}
+		}
+
+		logrus.Infoln("Caller:", result)
+		p.userId = *result.UserId
 	}
 
 	return v4.NewSigner(p.credentials)
@@ -279,6 +313,10 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	addHeaders(r.Header, req.Header)
 
+	// HACK: Add in the sts callerId
+	req.Header.Add("x-sts-userid", p.userId)
+	logrus.Debug("Headers:", req.Header)
+
 	// Make signV4 optional
 	if !p.nosignreq {
 		// Start AWS session from ENV, Shared Creds or EC2Role
@@ -293,6 +331,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to sign", http.StatusForbidden)
 			return
 		}
+		logrus.Debugln("Signed request")
 	}
 
 	resp, err := p.httpClient.Do(req)
@@ -487,9 +526,12 @@ func main() {
 		timeout         int
 		remoteTerminate bool
 		assumeRole      string
+		gateway         string
 	)
 
 	flag.StringVar(&endpoint, "endpoint", "", "Amazon ElasticSearch Endpoint (e.g: https://dummy-host.eu-west-1.es.amazonaws.com)")
+	flag.StringVar(&gateway, "gateway", "", "Amazon API Gateway Endpoint (e.g: https://dummy-host.execute-api.us-east-1.amazonaws.com)")
+	// https://search-development-rfww7rhanhknyfacibgy54hb7y.us-east-1.es.amazonaws.com
 	flag.StringVar(&listenAddress, "listen", "127.0.0.1:9200", "Local TCP port to listen on")
 	flag.BoolVar(&verbose, "verbose", false, "Print user requests")
 	flag.BoolVar(&logtofile, "log-to-file", false, "Log user requests and ElasticSearch responses to files")
@@ -551,6 +593,7 @@ func main() {
 		realm,
 		remoteTerminate,
 		assumeRole,
+		gateway,
 	)
 
 	if err = p.parseEndpoint(); err != nil {
