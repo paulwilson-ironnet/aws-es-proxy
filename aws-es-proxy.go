@@ -239,24 +239,20 @@ func (p *proxy) getSigner() *v4.Signer {
 		p.credentials = creds
 		logrus.Infoln("Generated fresh AWS Credentials object")
 
+		// Get the current user
 		stsSvc := sts.New(sess)
-		// if err != nil {
-		// 	logrus.Errorln("Failed to get STS service", err)
-		// }
 		identityInput := &sts.GetCallerIdentityInput{}
 		result, err := stsSvc.GetCallerIdentity(identityInput)
 		if err != nil {
 			if aerr, ok := err.(awserr.Error); ok {
 				switch aerr.Code() {
 				default:
-					logrus.Errorln("Huh", err)
-					// fmt.Println(aerr.Error())
+					logrus.Errorln("Huh:", aerr.Error())
 				}
 			} else {
 				// Print the error, cast err to awserr.Error to get the Code and
 				// Message from an error.
-				logrus.Errorln("Huh", err)
-				// fmt.Println(err.Error())
+				logrus.Errorln("Huh:", err.Error())
 			}
 		}
 
