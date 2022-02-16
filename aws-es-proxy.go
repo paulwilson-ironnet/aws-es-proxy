@@ -154,6 +154,8 @@ func (p *proxy) parseGateway() error {
 			p.gateway)
 	}
 
+	// TODO: Get the service and region from the gateway endpoint given
+
 	p.gatewayHost = link.Host
 
 	return nil
@@ -222,11 +224,11 @@ func (p *proxy) parseEndpoint() error {
 			parts := strings.Split(link.Host, ".")
 			p.region, p.service = parts[1], "es"
 			logrus.Debugln("AWS Region", p.region)
-		} else {
-			// HACK: replace if using gateway option
-			p.region, p.service = "us-east-1", "es"
-			logrus.Debugln("AWS Region", p.region)
-		}
+		} // else {
+		// 	// HACK: replace if using gateway option
+		// 	p.region, p.service = "us-east-1", "es"
+		// 	logrus.Debugln("AWS Region", p.region)
+		// }
 	}
 
 	return nil
@@ -349,12 +351,17 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Start AWS session from ENV, Shared Creds or EC2Role
 		signer := p.getSigner()
 
-		// TODO: Sign for OpenSerch
-		//       Stash signing headers
-		//       Sign for API Gateway
-		//       Include stashed headers as estra pass through headers
-		//       Send to API Gateway
-		//       API Gateway lambda replace signing headers with pass through headers and forward to OpenSearch
+		// If we're going to proxy through an API Gateway we need to ...
+		//   Sign for OpenSerch
+		//   Stash signing headers
+		//   Sign for API Gateway
+		//   Include stashed headers as estra pass through headers
+		//   Send to the API Gateway
+		//   the API Gateway lambda needs to ...
+		//     replace signing headers with pass through headers
+		//     forward to OpenSearch
+		//     pass the response back
+
 		// Sign the request with AWSv4
 		payload := bytes.NewReader(replaceBody(req))
 		hdrs, err := signer.Sign(req, payload, p.service, p.region, time.Now())
@@ -369,6 +376,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logrus.Debugln("Headers returned from signing: ", hdrs)
 		logrus.Debugln("Signed request headers: ", req.Header)
 
+		// If we were given a gatewayHost then we are assuming we're proxying through the gateway
 		if p.gatewayHost != "" {
 			// Keep the already created signing headers
 			signDateHdr := req.Header["X-Amz-Date"][0]
@@ -376,7 +384,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Change the host to the gateway
 			// NOTE: May need to change a few other things
 			logrus.Debugln("Setting request host to: ", p.gatewayHost)
-			// osHost := req.Host
+			osHost := req.Host
 			req.Host = p.gatewayHost
 			req.URL.Host = p.gatewayHost
 			// req.URL.Path = r.URL.Path
@@ -384,6 +392,8 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Resign for the gateway
 			// TODO: Need to set the service and region properly
 			// hdrs, err := signer.Sign(req, payload, p.service, p.region, time.Now())
+			// TODO: We should get the service and region from the gateway endpoint provided
+			// HACK: Assuming the api gateway is in us-east-1
 			hdrs, err := signer.Sign(req, payload, "execute-api", "us-east-1", time.Now())
 			if err != nil {
 				p.credentials = nil
@@ -396,7 +406,8 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			logrus.Debugln("Headers returned from signing: ", hdrs)
 			logrus.Debugln("Signed request headers: ", req.Header)
 			// Add in the pass through signing headers
-			req.Header.Add("x-irnt-host", p.endpoint)
+			// req.Header.Add("x-irnt-host", p.endpoint)
+			req.Header.Add("x-irnt-host", osHost)
 			req.Header.Add("x-irnt-authorization", signAuthHdr)
 			req.Header.Add("x-irnt-date", signDateHdr)
 			logrus.Debug("Headers:", req.Header)
