@@ -620,7 +620,6 @@ func main() {
 
 	flag.StringVar(&endpoint, "endpoint", "", "Amazon ElasticSearch Endpoint (e.g: https://dummy-host.eu-west-1.es.amazonaws.com)")
 	flag.StringVar(&gateway, "gateway", "", "Amazon API Gateway Endpoint (e.g: https://dummy-host.execute-api.us-east-1.amazonaws.com)")
-	// https://search-development-rfww7rhanhknyfacibgy54hb7y.us-east-1.es.amazonaws.com
 	flag.StringVar(&listenAddress, "listen", "127.0.0.1:9200", "Local TCP port to listen on")
 	flag.BoolVar(&verbose, "verbose", false, "Print user requests")
 	flag.BoolVar(&logtofile, "log-to-file", false, "Log user requests and ElasticSearch responses to files")
