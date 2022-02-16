@@ -329,6 +329,9 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxied.Scheme = p.scheme
 	proxied.Path = path.Clean(proxied.Path)
 
+	logrus.Debug("r.Host:", r.Host)
+	logrus.Debug("r.URL:", r.URL)
+
 	if req, err = http.NewRequest(r.Method, proxied.String(), r.Body); err != nil {
 		logrus.WithError(err).Errorln("Failed creating new request.")
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -339,7 +342,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Add in the sts callerId
 	req.Header.Add("x-sts-userid", p.userId)
-	logrus.Debug("Headers:", req.Header)
+	// logrus.Debug("Headers:", req.Header)
 
 	// Make signV4 optional
 	if !p.nosignreq {
@@ -367,13 +370,21 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logrus.Debugln("Signed request headers: ", req.Header)
 
 		if p.gatewayHost != "" {
-			logrus.Debugln("Setting request host to: ", p.gatewayHost)
+			// Keep the already created signing headers
 			signDateHdr := req.Header["X-Amz-Date"][0]
 			signAuthHdr := req.Header["Authorization"][0]
+			// Change the host to the gateway
+			// NOTE: May need to change a few other things
+			logrus.Debugln("Setting request host to: ", p.gatewayHost)
 			// osHost := req.Host
 			req.Host = p.gatewayHost
+			req.URL.Host = p.gatewayHost
+			// req.URL.Path = r.URL.Path
+
 			// Resign for the gateway
-			hdrs, err := signer.Sign(req, payload, p.service, p.region, time.Now())
+			// TODO: Need to set the service and region properly
+			// hdrs, err := signer.Sign(req, payload, p.service, p.region, time.Now())
+			hdrs, err := signer.Sign(req, payload, "execute-api", "us-east-1", time.Now())
 			if err != nil {
 				p.credentials = nil
 				logrus.Errorln("Failed to sign", err)
@@ -391,6 +402,15 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			logrus.Debug("Headers:", req.Header)
 		}
 	}
+
+	logrus.Debug("Full Request:", req)
+	logrus.Debug("Request URI:", req.RequestURI)
+	logrus.Debug("Request Host:", req.Host)
+	logrus.Debug("Request URL:", req.URL)
+
+	// HACK!
+	// req.URL.Host = p.gatewayHost
+	// req.URL.Path = r.URL.Path
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
